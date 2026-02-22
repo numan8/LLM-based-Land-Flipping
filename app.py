@@ -1,5 +1,5 @@
 # app.py — Cash Sales Velocity Dashboard + TOP AI (LLM Q&A + Safe Plotting)
-# Put ai_stats_clean_for_velocity.csv next to this file (or use uploader if you added that earlier).
+# Loads data ONLY from repo file: ai_stats_clean_for_velocity.csv (no uploader / drag-and-drop)
 
 import os
 import json
@@ -56,8 +56,8 @@ def get_openai_client_and_model() -> Tuple[OpenAI, str]:
 # Load data
 # ----------------------------
 @st.cache_data
-def load_data(source) -> pd.DataFrame:
-    df = pd.read_csv(source)
+def load_data(path: str) -> pd.DataFrame:
+    df = pd.read_csv(path)
 
     required = [
         "Acres",
@@ -111,6 +111,9 @@ def load_data(source) -> pd.DataFrame:
     df["profit_pct_cost"] = np.where(df["Total Purchase Price"] > 0, df["profit_$"] / df["Total Purchase Price"], np.nan)
 
     # Commission assumptions (client instructions)
+    # - Acq Agent: 4% of PROFIT
+    # - Sales Agent: 4% of PROFIT
+    # - Affiliate/Listing Agent: 10% of SALE PRICE
     df["commission_profit_based_$"] = 0.08 * df["profit_$"].clip(lower=0)                 # 4% + 4% of profit
     df["commission_sale_based_$"] = 0.10 * df["Cash Sales Price - amount"].clip(lower=0)  # 10% of sale
 
@@ -359,7 +362,12 @@ def render_plot_from_spec(df_: pd.DataFrame, spec: Dict[str, Any]):
         st.plotly_chart(fig, use_container_width=True)
 
 
-def ask_llm_about_stats(user_question: str, df_filtered: pd.DataFrame, reliability_prob: float, min_n_threshold: int) -> Tuple[str, Optional[Dict[str, Any]]]:
+def ask_llm_about_stats(
+    user_question: str,
+    df_filtered: pd.DataFrame,
+    reliability_prob: float,
+    min_n_threshold: int
+) -> Tuple[str, Optional[Dict[str, Any]]]:
     client, model = get_openai_client_and_model()
 
     kpis = {
@@ -439,23 +447,21 @@ def ask_llm_about_stats(user_question: str, df_filtered: pd.DataFrame, reliabili
 
 
 # ----------------------------
-# Sidebar: data + filters
+# Load data (repo file ONLY)
 # ----------------------------
-st.sidebar.header("Data")
-
 DATA_PATH = "ai_stats_clean_for_velocity.csv"
+try:
+    df = load_data(DATA_PATH)
+except FileNotFoundError:
+    st.error(
+        "Data file not found: `ai_stats_clean_for_velocity.csv`.\n\n"
+        "Fix: upload/commit this CSV to the repo in the same folder as `app.py`."
+    )
+    st.stop()
 
-uploaded = st.sidebar.file_uploader("Upload AI Stats CSV (optional)", type=["csv"])
-if uploaded is not None:
-    df = load_data(uploaded)
-else:
-    try:
-        df = load_data(DATA_PATH)
-    except FileNotFoundError:
-        st.sidebar.error("CSV not found. Upload it here, or add `ai_stats_clean_for_velocity.csv` next to app.py.")
-        st.stop()
-
-st.sidebar.divider()
+# ----------------------------
+# Sidebar filters
+# ----------------------------
 st.sidebar.header("Filters")
 
 min_date = df["PURCHASE DATE"].min()
@@ -541,13 +547,11 @@ st.caption(
     "or “Plot markup_multiple vs days_to_sale by speed_bucket.”"
 )
 
-# Initialize chat history
 if "chat_messages" not in st.session_state:
     st.session_state.chat_messages = [
         {"role": "assistant", "content": "Ask me about the *current filtered deals*. If you want a chart, say “plot …” or “chart …”."}
     ]
 
-# Action buttons (common client questions)
 b1, b2, b3, b4 = st.columns([1, 1, 1, 1])
 with b1:
     if st.button("Highest markup for ≤30 (reliable)", use_container_width=True):
@@ -562,27 +566,23 @@ with b4:
     if st.button("Plot: markup vs days", use_container_width=True):
         st.session_state.pending_prompt = "Plot markup_multiple vs days_to_sale colored by speed_bucket."
 
-# Chat input at top (prominent)
 prompt = st.chat_input("Type your question here (client-style prompts work best)...")
 if "pending_prompt" in st.session_state and st.session_state.pending_prompt:
-    # Auto-run from buttons
     prompt = st.session_state.pending_prompt
     st.session_state.pending_prompt = ""
 
-# Show last few messages (keep it clean)
 with st.expander("Conversation (click to expand)", expanded=False):
     for m in st.session_state.chat_messages[-10:]:
         with st.chat_message(m["role"]):
             st.write(m["content"])
 
-# Run LLM
 if prompt:
     st.session_state.chat_messages.append({"role": "user", "content": prompt})
 
     with st.container(border=True):
         st.markdown("### AI Answer")
         with st.spinner("Analyzing AI Stats..."):
-            answer, plot_spec = ask_llm_about_stats(prompt, f, reliability_prob, int(min_n_threshold))
+            answer, plot_spec = ask_llm_about_stats(prompt, f, float(reliability_prob), int(min_n_threshold))
 
         st.write(answer)
 
@@ -623,6 +623,7 @@ if n and n < MIN_ROWS_SOFT_WARNING:
 
 st.divider()
 
+
 # ----------------------------
 # Tabs (rest of dashboard)
 # ----------------------------
@@ -660,14 +661,13 @@ with tab1:
         best_bin_message(t60, "≤60", MIN_ROWS_FOR_BINS)
 
     st.markdown("### Highest markup that still sells fast (reliability threshold)")
-
     c1, c2 = st.columns(2)
     with c1:
-        st.markdown(f"**≤30 days (P ≥ {reliability_prob:.0%})**")
+        st.markdown(f"**≤30 days (P ≥ {float(reliability_prob):.0%})**")
         m30 = max_markup_for_probability(f, target_days=30, min_prob=float(reliability_prob), min_n=int(min_n_threshold))
         st.json(m30)
     with c2:
-        st.markdown(f"**≤60 days (P ≥ {reliability_prob:.0%})**")
+        st.markdown(f"**≤60 days (P ≥ {float(reliability_prob):.0%})**")
         m60 = max_markup_for_probability(f, target_days=60, min_prob=float(reliability_prob), min_n=int(min_n_threshold))
         st.json(m60)
 
